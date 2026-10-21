@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  PATIENT
+  DOCTOR
+  ADMIN
+}
+
+enum SlotStatus {
+  AVAILABLE
+  BOOKED
+  BLOCKED
+}
+
+enum ConsultationStatus {
+  BOOKED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(PATIENT)
+  isActive     Boolean  @default(true)
+  mfaEnabled   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  profile         Profile?
+  doctor          Doctor?
+  patientVisits   Consultation[]   @relation("PatientConsultations")
+  auditLogs       AuditLog[]
+  idempotencyKeys IdempotencyKey[]
+}
+
+model Profile {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @db.Uuid
+  fullName  String
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+}
+
+model Doctor {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @unique @db.Uuid
+  specialization String
+  bio            String?
+  isVerified     Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user          User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  slots         AvailabilitySlot[]
+  consultations Consultation[]     @relation("DoctorConsultations")
+
+  @@index([specialization, isVerified])
+}
+
+model AvailabilitySlot {
+  id        String     @id @default(uuid()) @db.Uuid
+  doctorId  String     @db.Uuid
+  startTime DateTime
+  endTime   DateTime
+  status    SlotStatus @default(AVAILABLE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  doctor       Doctor        @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  consultation Consultation?
+
+  @@index([doctorId, status, startTime])
+  @@index([startTime, status])
+}
+
+model Consultation {
+  id        String             @id @default(uuid()) @db.Uuid
+  patientId String             @db.Uuid
+  doctorId  String             @db.Uuid
+  slotId    String             @unique @db.Uuid
+  status    ConsultationStatus @default(BOOKED)
+  notes     String?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  patient       User             @relation("PatientConsultations", fields: [patientId], references: [id], onDelete: Restrict)
+  doctor        Doctor           @relation("DoctorConsultations", fields: [doctorId], references: [id], onDelete: Restrict)
+  slot          AvailabilitySlot @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  prescriptions Prescription[]
+  payments      Payment[]
+
+  @@index([patientId, createdAt])
+  @@index([doctorId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+model Prescription {
+  id             String   @id @default(uuid()) @db.Uuid
+  consultationId String   @db.Uuid
+  doctorId       String   @db.Uuid
+  details        Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+
+  @@index([consultationId, createdAt])
+}
+
+model Payment {
+  id                String        @id @default(uuid()) @db.Uuid
+  consultationId    String        @db.Uuid
+  amountMinor       Int
+  currency          String        @default("INR")
+  status            PaymentStatus @default(PENDING)
+  providerReference String?       @unique
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+
+  @@index([consultationId, status])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @db.Uuid
+  action     String
+  resource   String
+  resourceId String?
+  requestId  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([actorId, createdAt])
+  @@index([resource, resourceId, createdAt])
+}
+
+model IdempotencyKey {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  key          String
+  requestHash  String
+  responseBody Json?
+  responseCode Int?
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, key])
+  @@index([expiresAt])
+}
