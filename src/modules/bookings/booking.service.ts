@@ -1,7 +1,8 @@
 
 import { createHash } from "node:crypto";
 import { Prisma } from "../../generated/prisma/client.js";
-import { prisma } from "../../config/database.js";
+import type { PrismaClient } from "../../generated/prisma/client.js";
+import { prisma as defaultPrisma } from "../../config/database.js";
 import { AppError } from "../../utils/appError.js";
 
 interface BookingInput {
@@ -18,11 +19,12 @@ export async function createBooking(
     patientId: string,
     idempotencyKey: string,
     input: BookingInput,
+    db: PrismaClient = defaultPrisma,
 ) {
     const requestHash = hashRequest(input);
 
     try {
-        return await prisma.$transaction(async (tx) => {
+        return await db.$transaction(async (tx) => {
             await tx.idempotencyKey.create({
                 data: {
                     userId: patientId,
@@ -34,15 +36,18 @@ export async function createBooking(
 
             const slots = await tx.$queryRaw<
                 {
-                    id: string; doctorId: string; status: string;
-                    startTime: Date; endTime: Date
+                    id: string;
+                    doctorId: string;
+                    status: string;
+                    startTime: Date;
+                    endTime: Date;
                 }[]
             >`
-        SELECT id, "doctorId", status, "startTime", "endTime"
-        FROM "AvailabilitySlot"
-        WHERE id = ${input.slotId}::uuid
-        FOR UPDATE
-      `;
+                SELECT id, "doctorId", status, "startTime", "endTime"
+                FROM "AvailabilitySlot"
+                WHERE id = ${input.slotId}::uuid
+                FOR UPDATE
+            `;
 
             const slot = slots[0];
 
@@ -51,23 +56,34 @@ export async function createBooking(
             }
 
             if (slot.status !== "AVAILABLE") {
-                throw new AppError(409, "Availability slot is no longer available");
+                throw new AppError(
+                    409,
+                    "Availability slot is no longer available",
+                );
             }
 
             if (new Date(slot.startTime) <= new Date()) {
-                throw new AppError(409, "Availability slot has already started");
+                throw new AppError(
+                    409,
+                    "Availability slot has already started",
+                );
             }
 
             const doctor = await tx.doctor.findUnique({
                 where: { id: slot.doctorId },
                 select: {
                     isVerified: true,
-                    user: { select: { isActive: true } },
+                    user: {
+                        select: { isActive: true },
+                    },
                 },
             });
 
             if (!doctor?.isVerified || !doctor.user.isActive) {
-                throw new AppError(409, "Doctor is not available for booking");
+                throw new AppError(
+                    409,
+                    "Doctor is not available for booking",
+                );
             }
 
             const consultation = await tx.consultation.create({
@@ -98,6 +114,7 @@ export async function createBooking(
                     createdAt: consultation.createdAt.toISOString(),
                 },
             };
+
             await tx.idempotencyKey.update({
                 where: {
                     userId_key: {
@@ -122,7 +139,7 @@ export async function createBooking(
             error instanceof Prisma.PrismaClientKnownRequestError &&
             error.code === "P2002"
         ) {
-            const previous = await prisma.idempotencyKey.findUnique({
+            const previous = await db.idempotencyKey.findUnique({
                 where: {
                     userId_key: {
                         userId: patientId,
@@ -143,7 +160,10 @@ export async function createBooking(
                     previous.responseCode !== 201 ||
                     !previous.responseBody
                 ) {
-                    throw new AppError(409, "Booking request is still unresolved");
+                    throw new AppError(
+                        409,
+                        "Booking request is still unresolved",
+                    );
                 }
 
                 return {
@@ -153,7 +173,10 @@ export async function createBooking(
                 };
             }
 
-            throw new AppError(409, "Availability slot has already been booked");
+            throw new AppError(
+                409,
+                "Availability slot has already been booked",
+            );
         }
 
         throw error;
